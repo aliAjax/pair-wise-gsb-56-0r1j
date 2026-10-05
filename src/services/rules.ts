@@ -1,4 +1,5 @@
 import type {
+  ApprovalFreeze,
   ApprovalLevel,
   ApprovalStep,
   LicenseRule,
@@ -7,6 +8,7 @@ import type {
   ValidationFinding,
   VersionDiff,
 } from '@/types/domain'
+import { getRulePool } from './freezes'
 
 const levelRank: Record<ApprovalLevel, number> = {
   standard: 1,
@@ -95,6 +97,7 @@ export function validatePackage(
   packageItem: MaterialPackage,
   files: MaterialFile[],
   rules: LicenseRule[],
+  freezes: ApprovalFreeze[] = [],
 ): ValidationFinding[] {
   const findings: ValidationFinding[] = []
   const packageFiles = files.filter((file) => file.packageId === packageItem.id)
@@ -132,23 +135,51 @@ export function validatePackage(
     }
   })
 
-  const currentMaxLevel = packageItem.approvalRoute.reduce(
-    (max, step) => Math.max(max, levelRank[step.level]),
-    0,
-  )
-  if (currentMaxLevel < levelRank[rule.approvalLevel]) {
-    add(
-      'escalation',
-      'high',
-      `当前审批路线最高为 ${currentMaxLevel} 级，规则要求 ${levelRank[rule.approvalLevel]} 级。`,
-      '重新生成审批路线并按升级级别补签。',
+  // 草稿尚未生成审批路线，提交时会按规则重新生成，不再给出阻断性升级结论。
+  if (packageItem.approvalRoute.length) {
+    const currentMaxLevel = packageItem.approvalRoute.reduce(
+      (max, step) => Math.max(max, levelRank[step.level]),
+      0,
     )
+    if (currentMaxLevel < levelRank[rule.approvalLevel]) {
+      add(
+        'escalation',
+        'high',
+        `当前审批路线最高为 ${currentMaxLevel} 级，规则要求 ${levelRank[rule.approvalLevel]} 级。`,
+        '重新生成审批路线并按升级级别补签。',
+      )
+    }
   }
 
-  if (packageItem.quotaUsed >= packageItem.quotaLimit) {
-    add('quota', 'high', '许可额度已用尽。', '申请额度调整或拆分至其他有效许可。')
-  } else if (packageItem.quotaLimit - packageItem.quotaUsed <= 10) {
-    add('quota', 'medium', '剩余许可额度不足 10%。', '审批通过前确认额度来源和扣减顺序。')
+  // 额度按许可规则池统计：已转用 + 审批中冻结单预占。
+  const pool = getRulePool(rule.id, rules, freezes)
+  const activeFreeze = freezes.find(
+    (freeze) => freeze.packageId === packageItem.id && freeze.status === 'active',
+  )
+  if (pool) {
+    if (pool.available <= 0) {
+      add(
+        'quota',
+        'high',
+        `规则额度池已占满：已转用 ${pool.used}，冻结中预占 ${pool.reserved}。`,
+        '等待其他冻结单释放或申请额度调整。',
+      )
+    } else if (pool.available <= Math.ceil(rule.quotaLimit * 0.1)) {
+      add(
+        'quota',
+        'medium',
+        `规则额度池剩余可用 ${pool.available}，不足上限的 10%（已转用 ${pool.used}，冻结中预占 ${pool.reserved}）。`,
+        '提交前确认额度来源和预占顺序。',
+      )
+    }
+    if (activeFreeze && activeFreeze.amount > pool.rule.quotaLimit - pool.used) {
+      add(
+        'freeze',
+        'high',
+        `当前冻结单预占 ${activeFreeze.amount} 已超出规则池可转用额度。`,
+        '撤回或等待额度释放后重新发起冻结。',
+      )
+    }
   }
 
   packageFiles.forEach((file) => {

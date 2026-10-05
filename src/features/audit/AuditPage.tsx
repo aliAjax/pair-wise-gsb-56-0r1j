@@ -84,6 +84,7 @@ export function AuditPage() {
         destination: item.destination,
         status: item.status,
         round: item.currentRound,
+        activeFreezeId: item.activeFreezeId,
         rule: workspace.rules.find((rule) => rule.id === item.matchedRuleId)?.name,
         files: workspace.files
           .filter((file) => file.packageId === item.id)
@@ -95,6 +96,7 @@ export function AuditPage() {
             )?.label,
           })),
       })),
+      freezes: workspace.freezes,
       findings: workspace.findings,
       audit: workspace.audit,
     }

@@ -9,7 +9,14 @@ export type PackageStatus =
   | 'locked'
 export type ApprovalLevel = 'standard' | 'enhanced' | 'senior'
 export type FindingLevel = 'high' | 'medium' | 'low'
-export type FindingType = 'missing-declaration' | 'escalation' | 'version-mismatch' | 'unclassified-page' | 'quota'
+export type FindingType =
+  | 'missing-declaration'
+  | 'escalation'
+  | 'version-mismatch'
+  | 'unclassified-page'
+  | 'quota'
+  | 'freeze'
+export type FreezeStatus = 'active' | 'consumed' | 'released' | 'invalidated'
 
 export interface PageReview {
   id: string
@@ -20,6 +27,41 @@ export interface PageReview {
   note: string
   reviewer: string
   reviewedAt?: string
+}
+
+/** 冻结单中固定下来的逐页核对结果，不再随后续改动变化。 */
+export type FrozenPageReview = PageReview
+
+export interface FrozenFileVersion {
+  fileId: string
+  fileName: string
+  fileKind: MaterialCategory
+  activeVersionId: string
+  versionLabel: string
+  versionHash: string
+  pages: FrozenPageReview[]
+}
+
+export interface ApprovalFreeze {
+  id: string
+  packageId: string
+  round: number
+  ruleId: string
+  ruleName: string
+  amount: number
+  status: FreezeStatus
+  createdAt: string
+  createdBy: string
+  /** 固定的声明。 */
+  declarations: string[]
+  /** 固定的文件现行版本与逐页核对结果。 */
+  files: FrozenFileVersion[]
+  /** 提交瞬间的逐页核对/许可校验结论。 */
+  findings: ValidationFinding[]
+  consumedAt?: string
+  releasedAt?: string
+  invalidatedAt?: string
+  invalidatedReason?: string
 }
 
 export interface FileVersion {
@@ -94,6 +136,8 @@ export interface MaterialPackage {
   declarations: string[]
   status: PackageStatus
   matchedRuleId?: string
+  /** 当前生效冻结单；冻结单失效（退回/撤回/资料变更）后清空。 */
+  activeFreezeId?: string
   approvalRoute: ApprovalStep[]
   currentRound: number
   quotaUsed: number
@@ -143,6 +187,7 @@ export interface WorkspaceState {
   findings: ValidationFinding[]
   comments: ReviewComment[]
   audit: AuditEntry[]
+  freezes: ApprovalFreeze[]
 }
 
 export interface VersionDiff {

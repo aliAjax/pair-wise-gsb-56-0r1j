@@ -6,6 +6,7 @@ import { StatusTag } from '@/components/StatusTag'
 import { useGetWorkspaceQuery } from '@/app/api'
 import type { MaterialPackage, ValidationFinding } from '@/types/domain'
 import { categoryLabels } from '@/services/mockData'
+import { summarizeRulePools } from '@/services/freezes'
 
 export function DashboardPage() {
   const navigate = useNavigate()
@@ -14,6 +15,9 @@ export function DashboardPage() {
   if (isLoading || !data) return <div className="panel">正在加载本地工作区...</div>
 
   const highFindings = data.findings.filter((item) => item.level === 'high')
+  const pools = summarizeRulePools(data.rules, data.freezes)
+  const activeFreezes = data.freezes.filter((freeze) => freeze.status === 'active')
+  const reservedQuota = activeFreezes.reduce((total, freeze) => total + freeze.amount, 0)
   const activePackages = data.packages.filter((item) =>
     ['validating', 'reviewing', 'returned'].includes(item.status),
   )
@@ -115,9 +119,11 @@ export function DashboardPage() {
           <small>必须解决后才能批准或扣减额度</small>
         </div>
         <div className="metric info">
-          <span>处理中资料包</span>
-          <strong>{activePackages.length}</strong>
-          <small>审批中、已退回或校验中</small>
+          <span>生效冻结单 / 预占额度</span>
+          <strong>
+            {activeFreezes.length} <small style={{ display: 'inline', fontSize: 14 }}>单 · {reservedQuota} 额度</small>
+          </strong>
+          <small>提交即预占规则池，退回或撤回释放</small>
         </div>
         <div className="metric warning">
           <span>受控技术页</span>
@@ -189,6 +195,54 @@ export function DashboardPage() {
           </Space>
         </section>
       </div>
+
+      <section className="panel">
+        <div className="panel-title">
+          <h2>许可规则额度池</h2>
+          <Button type="link" onClick={() => navigate('/licenses')}>
+            查看额度明细
+          </Button>
+        </div>
+        <Table
+          rowKey={(record) => record.rule.id}
+          size="small"
+          pagination={false}
+          dataSource={pools}
+          columns={[
+            { title: '规则', dataIndex: ['rule', 'name'], minWidth: 240 },
+            { title: '上限', dataIndex: ['rule', 'quotaLimit'], width: 70 },
+            { title: '已转用', dataIndex: 'used', width: 80 },
+            {
+              title: '冻结中预占',
+              dataIndex: 'reserved',
+              width: 100,
+              render: (value: number) =>
+                value ? <Tag color="processing">{value}</Tag> : <span className="muted">0</span>,
+            },
+            {
+              title: '可用',
+              dataIndex: 'available',
+              width: 80,
+              render: (value: number) => (
+                <Tag color={value <= 0 ? 'error' : value <= 5 ? 'warning' : 'success'}>
+                  {value}
+                </Tag>
+              ),
+            },
+            {
+              title: '冻结中资料包',
+              render: (_, record) =>
+                record.activeFreezes.length
+                  ? record.activeFreezes
+                      .map((freeze) =>
+                        data.packages.find((pkg) => pkg.id === freeze.packageId)?.code ?? freeze.packageId,
+                      )
+                      .join('、')
+                  : '无',
+            },
+          ]}
+        />
+      </section>
 
       <section className="panel">
         <div className="panel-title">

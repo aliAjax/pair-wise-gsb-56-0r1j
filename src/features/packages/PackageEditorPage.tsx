@@ -27,6 +27,8 @@ import {
 } from '@/app/api'
 import type { FileVersion, MaterialCategory, MaterialFile } from '@/types/domain'
 import { categoryLabels } from '@/services/mockData'
+import { getActiveFreeze } from '@/services/freezes'
+import { confirmFreezeInvalidation } from '@/app/freezeGuard'
 
 interface PackageFormValues {
   title: string
@@ -73,6 +75,7 @@ export function PackageEditorPage() {
     () => data?.files.filter((file) => file.packageId === packageId) ?? [],
     [data, packageId],
   )
+  const activeFreeze = data ? getActiveFreeze(packageId, data.freezes) : undefined
 
   useEffect(() => {
     if (!packageItem) return
@@ -103,12 +106,18 @@ export function PackageEditorPage() {
 
   async function savePackageInfo() {
     const values = await packageForm.validateFields()
+    if (activeFreeze && !(await confirmFreezeInvalidation(activeFreeze, '保存资料包申报信息或声明'))) {
+      return
+    }
     const result = await savePackage({ packageId, patch: values }).unwrap()
     const matched = result.packages.find((item) => item.id === packageId)
     message.success(`资料包信息已保存，当前匹配：${result.rules.find((item) => item.id === matched?.matchedRuleId)?.name ?? '无规则'}`)
   }
 
   async function submitFile() {
+    if (activeFreeze && !(await confirmFreezeInvalidation(activeFreeze, '登记新的资料文件'))) {
+      return
+    }
     const values = await fileForm.validateFields()
     const version: FileVersion = {
       id: `file-version-${crypto.randomUUID()}`,
@@ -144,6 +153,9 @@ export function PackageEditorPage() {
 
   async function submitFileVersion() {
     if (!versionModalFile) return
+    if (activeFreeze && !(await confirmFreezeInvalidation(activeFreeze, `为 ${versionModalFile.name} 上传新版本`))) {
+      return
+    }
     const values = await versionForm.validateFields()
     await addFileVersion({
       packageId,
@@ -157,6 +169,9 @@ export function PackageEditorPage() {
 
   async function submitPackageVersion() {
     const values = await packageVersionForm.validateFields()
+    if (activeFreeze && !(await confirmFreezeInvalidation(activeFreeze, `创建资料包版本 ${values.label}`))) {
+      return
+    }
     await createPackageVersion({ packageId, ...values }).unwrap()
     message.success('资料包版本快照已创建')
     setPackageVersionModal(false)
@@ -239,6 +254,9 @@ export function PackageEditorPage() {
                         label: `${version.label} · ${version.hash}`,
                       }))}
                       onChange={async (versionId) => {
+                        if (activeFreeze && !(await confirmFreezeInvalidation(activeFreeze, `切换 ${file.name} 的审批引用版本`))) {
+                          return
+                        }
                         await setReferenceVersion({ fileId: file.id, versionId }).unwrap()
                         message.success('审批引用版本已更新并留痕')
                       }}
@@ -363,6 +381,16 @@ export function PackageEditorPage() {
           </>
         }
       />
+
+      {activeFreeze ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`审批冻结中（第 ${activeFreeze.round} 轮 · 已预占 ${activeFreeze.amount} 个额度）`}
+          description="保存资料包、登记文件、换版本、切换引用版本或创建资料包版本都会使冻结单失效：审批退回、预占额度释放，旧快照保留。请先在审批页撤回，再修改资料。"
+        />
+      ) : null}
 
       {packageFindings.some((item) => item.level === 'high') ? (
         <Alert

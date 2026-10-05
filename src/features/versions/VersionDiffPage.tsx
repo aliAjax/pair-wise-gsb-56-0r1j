@@ -9,6 +9,8 @@ import {
 } from '@/app/api'
 import type { MaterialFile, VersionDiff } from '@/types/domain'
 import { diffPackageVersions } from '@/services/rules'
+import { getActiveFreeze } from '@/services/freezes'
+import { confirmFreezeInvalidation } from '@/app/freezeGuard'
 
 export function VersionDiffPage() {
   const [searchParams] = useSearchParams()
@@ -25,7 +27,11 @@ export function VersionDiffPage() {
     () => data?.packages.find((item) => item.id === selectedId),
     [data, selectedId],
   )
-  const files = data?.files.filter((file) => file.packageId === selectedId) ?? []
+  const files = useMemo(
+    () => data?.files.filter((file) => file.packageId === selectedId) ?? [],
+    [data, selectedId],
+  )
+  const activeFreeze = data ? getActiveFreeze(selectedId, data.freezes) : undefined
 
   useEffect(() => {
     if (selected && !selected.versions.some((version) => version.id === versionId)) {
@@ -57,6 +63,10 @@ export function VersionDiffPage() {
             label: `${version.label} · ${version.hash}`,
           }))}
           onChange={async (nextVersionId) => {
+            const freeze = data ? getActiveFreeze(selectedId, data.freezes) : undefined
+            if (freeze && !(await confirmFreezeInvalidation(freeze, '切换文件审批引用版本'))) {
+              return
+            }
             await setReferenceVersion({ fileId: file.id, versionId: nextVersionId }).unwrap()
             message.success('版本引用已切换并写入审计')
           }}
@@ -133,6 +143,15 @@ export function VersionDiffPage() {
         <span className="grow" />
         <Tag color={diffs.length ? 'warning' : 'success'}>{diffs.length} 项差异</Tag>
       </div>
+
+      {activeFreeze ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 14 }}
+          message="该资料包审批冻结中，切换文件引用版本会令冻结单失效、审批退回并释放预占额度。"
+        />
+      ) : null}
 
       {selected ? (
         <div className="two-column">

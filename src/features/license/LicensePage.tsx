@@ -3,7 +3,6 @@ import {
   Alert,
   Button,
   Descriptions,
-  InputNumber,
   Progress,
   Select,
   Space,
@@ -15,21 +14,17 @@ import type { TableColumnsType } from 'antd'
 import { SafetyCertificateOutlined } from '@ant-design/icons'
 import { useSearchParams } from 'react-router-dom'
 import { PageHeader } from '@/components/PageHeader'
-import {
-  useDeductQuotaMutation,
-  useGetWorkspaceQuery,
-  useValidatePackageMutation,
-} from '@/app/api'
-import type { LicenseRule } from '@/types/domain'
+import { FreezePanel } from '@/components/FreezePanel'
+import { useGetWorkspaceQuery, useValidatePackageMutation } from '@/app/api'
+import type { ApprovalFreeze, LicenseRule } from '@/types/domain'
 import { approvalLevelLabels, findApplicableRule } from '@/services/rules'
+import { freezeStatusLabels, summarizeRulePools } from '@/services/freezes'
 
 export function LicensePage() {
   const [searchParams] = useSearchParams()
   const { data, isLoading } = useGetWorkspaceQuery()
   const [validatePackage] = useValidatePackageMutation()
-  const [deductQuota, deductState] = useDeductQuotaMutation()
   const [selectedId, setSelectedId] = useState(searchParams.get('package') ?? '')
-  const [amount, setAmount] = useState(5)
 
   useEffect(() => {
     if (!selectedId && data?.packages[0]) setSelectedId(data.packages[0].id)
@@ -43,34 +38,106 @@ export function LicensePage() {
   const currentRule = data?.rules.find((item) => item.id === selected?.matchedRuleId)
   const packageFindings = data?.findings.filter((item) => item.packageId === selectedId) ?? []
   const hasHighFindings = packageFindings.some((item) => item.level === 'high')
-  const remaining = selected ? selected.quotaLimit - selected.quotaUsed : 0
+  const pools = useMemo(
+    () => (data ? summarizeRulePools(data.rules, data.freezes) : []),
+    [data],
+  )
+  const selectedPool = pools.find((pool) => pool.rule.id === currentRule?.id)
+  const selectedFreezes = useMemo(
+    () =>
+      data
+        ? data.freezes
+            .filter((freeze) => freeze.packageId === selectedId)
+            .sort((left, right) => right.round - left.round)
+        : [],
+    [data, selectedId],
+  )
+  const activeFreeze = selectedFreezes.find((freeze) => freeze.status === 'active')
 
   if (isLoading || !data) return <div className="panel">正在加载许可规则...</div>
 
-  const ruleColumns: TableColumnsType<LicenseRule> = [
-    { title: '规则名称', dataIndex: 'name', minWidth: 240 },
+  const poolColumns: TableColumnsType<(typeof pools)[number]> = [
+    { title: '规则名称', dataIndex: 'rule', minWidth: 230, render: (rule: LicenseRule) => rule.name },
     {
       title: '国家或地区',
-      dataIndex: 'destinations',
-      width: 135,
-      render: (values: string[]) => values.join('、'),
-    },
-    {
-      title: '技术标签',
-      dataIndex: 'technologyTags',
-      width: 220,
-      render: (values: string[]) => values.join('、') || '通用',
+      width: 130,
+      render: (_, record) => record.rule.destinations.join('、'),
     },
     {
       title: '审批等级',
-      dataIndex: 'approvalLevel',
-      width: 110,
-      render: (value: LicenseRule['approvalLevel']) => approvalLevelLabels[value],
+      width: 100,
+      render: (_, record) => approvalLevelLabels[record.rule.approvalLevel],
+    },
+    { title: '上限', dataIndex: ['rule', 'quotaLimit'], width: 70 },
+    { title: '已转用', dataIndex: 'used', width: 80 },
+    {
+      title: '冻结中预占',
+      dataIndex: 'reserved',
+      width: 100,
+      render: (value: number) =>
+        value ? <Tag color="processing">{value}</Tag> : <span className="muted">0</span>,
     },
     {
-      title: '规则额度',
-      dataIndex: 'quotaLimit',
-      width: 100,
+      title: '可用',
+      dataIndex: 'available',
+      width: 80,
+      render: (value: number) => (
+        <Tag color={value <= 0 ? 'error' : value <= 5 ? 'warning' : 'success'}>{value}</Tag>
+      ),
+    },
+    {
+      title: '池占用',
+      width: 170,
+      render: (_, record) => (
+        <Progress
+          percent={Math.round(
+            ((record.used + record.reserved) / record.rule.quotaLimit) * 100,
+          )}
+          size="small"
+          status={record.available <= 0 ? 'exception' : 'active'}
+        />
+      ),
+    },
+  ]
+
+  const freezeColumns: TableColumnsType<ApprovalFreeze> = [
+    {
+      title: '冻结单',
+      dataIndex: 'id',
+      width: 210,
+      render: (value: string) => <span className="mono">{value}</span>,
+    },
+    { title: '轮次', dataIndex: 'round', width: 70, render: (value: number) => `第 ${value} 轮` },
+    { title: '预占额度', dataIndex: 'amount', width: 90 },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      width: 90,
+      render: (value: ApprovalFreeze['status']) => (
+        <Tag
+          color={
+            value === 'active'
+              ? 'processing'
+              : value === 'consumed'
+                ? 'success'
+                : value === 'released'
+                  ? 'warning'
+                  : 'error'
+          }
+        >
+          {freezeStatusLabels[value]}
+        </Tag>
+      ),
+    },
+    {
+      title: '去向',
+      render: (_, record) =>
+        record.invalidatedReason ??
+        (record.status === 'consumed'
+          ? '末步通过，已转用'
+          : record.status === 'released'
+            ? '退回/撤回，已释放'
+            : '审批进行中'),
     },
   ]
 
@@ -80,28 +147,14 @@ export function LicensePage() {
     message.success('规则匹配和缺失声明已重新校验')
   }
 
-  async function deduct() {
-    if (!selected) return
-    try {
-      await deductQuota({ packageId: selected.id, amount }).unwrap()
-      message.success(`已扣减 ${amount} 个许可额度`)
-    } catch (error) {
-      const detail =
-        typeof error === 'object' && error && 'data' in error
-          ? (error.data as { error?: string }).error
-          : undefined
-      message.error(detail ?? '额度扣减失败')
-    }
-  }
-
   return (
     <div>
       <PageHeader
         title="许可与额度"
-        description="根据资料分类、国家地区、技术参数和人员范围匹配规则，补正声明并控制额度扣减。"
+        description="额度按许可规则池管理：提交审批即冻结预占，退回/撤回/失效释放，最后一步通过仅按同一冻结单转用。"
         actions={
           selected ? (
-            <Button loading={deductState.isLoading} onClick={refreshValidation}>
+            <Button onClick={refreshValidation}>
               重新校验
             </Button>
           ) : null
@@ -133,12 +186,14 @@ export function LicensePage() {
               <Descriptions.Item label="人员范围">
                 {selected.personnelScopes.join('、') || '无特别范围'}
               </Descriptions.Item>
-              <Descriptions.Item label="审批状态">
-                {selected.status === 'approved'
-                  ? '已批准，可核对额度'
-                  : selected.status === 'licensed'
-                    ? '已扣减额度'
-                    : '尚未完成审批'}
+              <Descriptions.Item label="审批与额度">
+                {selected.status === 'licensed'
+                  ? `已许可，冻结单预占 ${selectedFreezes.find((item) => item.status === 'consumed')?.amount ?? selected.quotaUsed} 已转用`
+                  : activeFreeze
+                    ? `审批冻结中，已从规则池预占 ${activeFreeze.amount}（末步通过后自动转用）`
+                    : selected.status === 'returned'
+                      ? '已退回，冻结单失效且预占已释放，补正后重新提交'
+                      : '未提交冻结单，规则池额度尚未预占'}
               </Descriptions.Item>
             </Descriptions>
           ) : null}
@@ -172,13 +227,23 @@ export function LicensePage() {
                   ))}
                 </div>
               </div>
-              <div>
-                <strong>审批升级</strong>
-                <div className="muted" style={{ marginTop: 5 }}>
-                  规则要求 {approvalLevelLabels[applicableRule.approvalLevel]}；当前路线规则：
-                  {currentRule?.name ?? '未生成'}。
+              {selectedPool ? (
+                <div>
+                  <strong>规则额度池</strong>
+                  <Progress
+                    percent={Math.round(
+                      ((selectedPool.used + selectedPool.reserved) / selectedPool.rule.quotaLimit) *
+                        100,
+                    )}
+                    style={{ marginTop: 10 }}
+                    status={selectedPool.available <= 0 ? 'exception' : 'active'}
+                  />
+                  <div className="muted">
+                    已转用 {selectedPool.used} · 冻结中预占 {selectedPool.reserved} · 可用{' '}
+                    {selectedPool.available} / 上限 {selectedPool.rule.quotaLimit}
+                  </div>
                 </div>
-              </div>
+              ) : null}
             </Space>
           ) : (
             <Alert type="error" showIcon message="没有匹配到规则，必须执行人工判定。" />
@@ -210,46 +275,37 @@ export function LicensePage() {
 
         <section className="panel">
           <div className="panel-title">
-            <h3>许可额度扣减</h3>
+            <h3>额度预占与转用</h3>
             <SafetyCertificateOutlined />
           </div>
           {selected ? (
-            <Space direction="vertical" size={16} style={{ width: '100%' }}>
-              <Progress
-                percent={Math.round((selected.quotaUsed / selected.quotaLimit) * 100)}
-                status={selected.quotaUsed >= selected.quotaLimit ? 'exception' : 'active'}
-              />
-              <div>
-                已使用 {selected.quotaUsed}，剩余 {remaining}，规则上限 {selected.quotaLimit}
-              </div>
-              <InputNumber
-                min={1}
-                max={Math.max(1, remaining)}
-                value={amount}
-                onChange={(value) => setAmount(value ?? 1)}
-                addonAfter="额度单位"
-                style={{ width: '100%' }}
-              />
-              <Button
-                type="primary"
-                block
-                disabled={
-                  selected.status !== 'approved' ||
-                  hasHighFindings ||
-                  amount > remaining ||
-                  remaining <= 0
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Alert
+                type={activeFreeze ? 'info' : selected.status === 'licensed' ? 'success' : 'warning'}
+                showIcon
+                message={
+                  activeFreeze
+                    ? `生效冻结单已预占 ${activeFreeze.amount} 个额度`
+                    : selected.status === 'licensed'
+                      ? `已按冻结单转用 ${selected.quotaUsed} 个额度`
+                      : '当前没有生效冻结单，未预占额度'
                 }
-                loading={deductState.isLoading}
-                onClick={deduct}
-              >
-                确认扣减并完成许可
-              </Button>
-              {selected.status !== 'approved' ? (
-                <Alert type="warning" showIcon message="只有全部审批步骤完成后才允许扣减额度。" />
-              ) : null}
-              {hasHighFindings ? (
-                <Alert type="error" showIcon message="存在高风险核对项，系统拒绝扣减额度。" />
-              ) : null}
+                description="额度在提交审批时从规则池预占；重复提交会被拦截。最后一步审批通过后只把本冻结单的预占转为实际使用，无需也不能手工扣减。"
+              />
+              <Table
+                rowKey="id"
+                size="small"
+                columns={freezeColumns}
+                dataSource={selectedFreezes}
+                pagination={false}
+                expandable={{
+                  expandedRowRender: (record) => (
+                    <div style={{ padding: '8px 12px' }}>
+                      <FreezePanel freeze={record} />
+                    </div>
+                  ),
+                }}
+              />
             </Space>
           ) : null}
         </section>
@@ -257,10 +313,10 @@ export function LicensePage() {
 
       <section className="panel">
         <div className="panel-title">
-          <h3>规则清单</h3>
-          <span className="muted">规则用于解释匹配结果，不允许在审批页面直接修改</span>
+          <h3>许可规则额度池</h3>
+          <span className="muted">“冻结中预占”会阻止同规则其他资料包占用，退回或撤回立即归还</span>
         </div>
-        <Table rowKey="id" columns={ruleColumns} dataSource={data.rules} pagination={false} />
+        <Table rowKey={(record) => record.rule.id} columns={poolColumns} dataSource={pools} pagination={false} />
       </section>
     </div>
   )

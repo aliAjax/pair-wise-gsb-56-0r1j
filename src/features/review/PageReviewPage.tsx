@@ -21,6 +21,8 @@ import {
 } from '@/app/api'
 import type { MaterialCategory, PageReview } from '@/types/domain'
 import { categoryLabels } from '@/services/mockData'
+import { getActiveFreeze } from '@/services/freezes'
+import { confirmFreezeInvalidation } from '@/app/freezeGuard'
 
 export function PageReviewPage() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -40,6 +42,7 @@ export function PageReviewPage() {
   const activeVersion = selectedFile?.versions.find(
     (version) => version.id === selectedFile.activeVersionId,
   )
+  const activeFreeze = data ? getActiveFreeze(selectedPackageId, data.freezes) : undefined
 
   useEffect(() => {
     if (!selectedPackageId && data?.packages[0]) {
@@ -84,6 +87,9 @@ export function PageReviewPage() {
 
   async function saveRows(ids: React.Key[]) {
     if (!selectedFile || !activeVersion) return
+    if (activeFreeze && !(await confirmFreezeInvalidation(activeFreeze, `修改 ${selectedFile.name} 的逐页核对结果`))) {
+      return
+    }
     for (const id of ids) {
       const page = pages.find((item) => item.id === id)
       if (!page) continue
@@ -227,6 +233,16 @@ export function PageReviewPage() {
           </>
         }
       />
+
+      {activeFreeze ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 14 }}
+          message={`该资料包审批冻结中（第 ${activeFreeze.round} 轮 · 已预占 ${activeFreeze.amount} 个额度）`}
+          description="冻结单固定了当前文件现行版本和逐页核对结果。保存任何核对页都会令冻结单失效、审批退回并释放预占额度；如需修改请先在审批页撤回。"
+        />
+      ) : null}
 
       <div className="toolbar">
         <Select
