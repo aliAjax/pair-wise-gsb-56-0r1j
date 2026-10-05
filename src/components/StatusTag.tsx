@@ -10,6 +10,7 @@ const colors: Record<PackageStatus, string> = {
   approved: 'cyan',
   licensed: 'green',
   locked: 'blue',
+  'freeze-invalid': 'volcano',
 }
 
 export function StatusTag({ status }: { status: PackageStatus }) {

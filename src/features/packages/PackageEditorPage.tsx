@@ -6,6 +6,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Popconfirm,
   Select,
   Space,
   Tabs,
@@ -27,6 +28,20 @@ import {
 } from '@/app/api'
 import type { FileVersion, MaterialCategory, MaterialFile } from '@/types/domain'
 import { categoryLabels } from '@/services/mockData'
+import {
+  freezeInvalidReasonLabels,
+  freezeStatusLabels,
+  getActiveFreeze,
+  getRuleQuotaPool,
+} from '@/services/freezes'
+
+function unpackError(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'data' in error) {
+    const detail = (error.data as { error?: string }).error
+    if (detail) return detail
+  }
+  return '操作失败'
+}
 
 interface PackageFormValues {
   title: string
@@ -73,6 +88,20 @@ export function PackageEditorPage() {
     () => data?.files.filter((file) => file.packageId === packageId) ?? [],
     [data, packageId],
   )
+  const activeFreeze = useMemo(
+    () => (data ? getActiveFreeze(data.freezes, packageId) : undefined),
+    [data, packageId],
+  )
+  const latestFreeze = useMemo(() => {
+    if (!data) return undefined
+    return [...data.freezes]
+      .filter((freeze) => freeze.packageId === packageId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]
+  }, [data, packageId])
+  const quotaPool = useMemo(() => {
+    const matchedRule = data?.rules.find((item) => item.id === packageItem?.matchedRuleId)
+    return data && matchedRule ? getRuleQuotaPool(matchedRule, data.freezes) : undefined
+  }, [data, packageItem])
 
   useEffect(() => {
     if (!packageItem) return
@@ -103,9 +132,17 @@ export function PackageEditorPage() {
 
   async function savePackageInfo() {
     const values = await packageForm.validateFields()
-    const result = await savePackage({ packageId, patch: values }).unwrap()
-    const matched = result.packages.find((item) => item.id === packageId)
-    message.success(`资料包信息已保存，当前匹配：${result.rules.find((item) => item.id === matched?.matchedRuleId)?.name ?? '无规则'}`)
+    try {
+      const result = await savePackage({ packageId, patch: values }).unwrap()
+      const matched = result.packages.find((item) => item.id === packageId)
+      if (activeFreeze) {
+        message.warning('资料包信息已保存，但有效冻结单已因此失效并释放预占，需要重新提交审批')
+      } else {
+        message.success(`资料包信息已保存，当前匹配：${result.rules.find((item) => item.id === matched?.matchedRuleId)?.name ?? '无规则'}`)
+      }
+    } catch (error) {
+      message.error(unpackError(error))
+    }
   }
 
   async function submitFile() {
@@ -136,23 +173,39 @@ export function PackageEditorPage() {
       referencedVersionId: version.id,
       versions: [version],
     }
-    await saveFile({ file }).unwrap()
-    message.success('文件已登记并建立初始版本')
-    fileForm.resetFields()
-    setFileModal(false)
+    try {
+      await saveFile({ file }).unwrap()
+      message.success(
+        activeFreeze
+          ? '文件已登记，审批冻结单因此失效并释放预占，请重新提交'
+          : '文件已登记并建立初始版本',
+      )
+      fileForm.resetFields()
+      setFileModal(false)
+    } catch (error) {
+      message.error(unpackError(error))
+    }
   }
 
   async function submitFileVersion() {
     if (!versionModalFile) return
     const values = await versionForm.validateFields()
-    await addFileVersion({
-      packageId,
-      fileId: versionModalFile.id,
-      ...values,
-    }).unwrap()
-    message.success('新文件版本已建立，逐页分类需要重新完成')
-    setVersionModalFile(undefined)
-    versionForm.resetFields()
+    try {
+      await addFileVersion({
+        packageId,
+        fileId: versionModalFile.id,
+        ...values,
+      }).unwrap()
+      message.success(
+        activeFreeze
+          ? '新文件版本已建立，冻结单已失效并释放预占；新版本逐页分类需重新完成'
+          : '新文件版本已建立，逐页分类需要重新完成',
+      )
+      setVersionModalFile(undefined)
+      versionForm.resetFields()
+    } catch (error) {
+      message.error(unpackError(error))
+    }
   }
 
   async function submitPackageVersion() {
@@ -164,9 +217,26 @@ export function PackageEditorPage() {
   }
 
   async function runValidation() {
-    const result = await validatePackage({ packageId }).unwrap()
-    const count = result.findings.filter((item) => item.packageId === packageId).length
-    message.success(`许可匹配校验完成，共 ${count} 项结论`)
+    try {
+      const result = await validatePackage({ packageId }).unwrap()
+      const count = result.findings.filter((item) => item.packageId === packageId).length
+      message.success(`许可匹配校验完成，共 ${count} 项结论`)
+    } catch (error) {
+      message.error(unpackError(error))
+    }
+  }
+
+  async function changeReference(file: MaterialFile, versionId: string) {
+    try {
+      await setReferenceVersion({ fileId: file.id, versionId }).unwrap()
+      message.success(
+        activeFreeze
+          ? '审批引用版本已更新，冻结单因此失效并释放预占，请重新提交'
+          : '审批引用版本已更新并留痕',
+      )
+    } catch (error) {
+      message.error(unpackError(error))
+    }
   }
 
   const tabItems = [
@@ -178,11 +248,23 @@ export function PackageEditorPage() {
           <div className="panel-title">
             <div>
               <h3>拆解与版本管理</h3>
-              <span className="muted">同一资料文件只能选择一个审批引用版本。</span>
+              <span className="muted">
+                同一资料文件只能选择一个审批引用版本；{activeFreeze ? '当前冻结单有效，登记文件、换版本或改引用会让冻结单失效并释放预占。' : '提交审批后这些操作会受冻结单约束。'}
+              </span>
             </div>
-            <Button icon={<FileAddOutlined />} onClick={() => setFileModal(true)}>
-              登记本地文件
-            </Button>
+            <Popconfirm
+              title="登记新文件"
+              description={
+                activeFreeze
+                  ? `这会让有效冻结单 ${activeFreeze.code} 失效并释放预占额度，确认继续？`
+                  : '为资料包登记一个新的本地文件。'
+              }
+              okText="确认登记"
+              cancelText="取消"
+              onConfirm={() => setFileModal(true)}
+            >
+              <Button icon={<FileAddOutlined />}>登记本地文件</Button>
+            </Popconfirm>
           </div>
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
             {files.map((file) => {
@@ -203,9 +285,16 @@ export function PackageEditorPage() {
                       </div>
                     </div>
                     <Space>
-                      <Button
-                        size="small"
-                        onClick={() => {
+                      <Popconfirm
+                        title="上传新版本"
+                        description={
+                          activeFreeze
+                            ? `新版本会成为现行版本，冻结单 ${activeFreeze.code} 将失效并释放预占，确认继续？`
+                            : '新版本不复用旧版逐页分类结果。'
+                        }
+                        okText="继续上传"
+                        cancelText="取消"
+                        onConfirm={() => {
                           setVersionModalFile(file)
                           versionForm.setFieldsValue({
                             label: `V${file.versions.length + 0.1}`,
@@ -214,8 +303,8 @@ export function PackageEditorPage() {
                           })
                         }}
                       >
-                        上传新版本
-                      </Button>
+                        <Button size="small">上传新版本</Button>
+                      </Popconfirm>
                       <Button
                         type="primary"
                         ghost
@@ -238,10 +327,7 @@ export function PackageEditorPage() {
                         value: version.id,
                         label: `${version.label} · ${version.hash}`,
                       }))}
-                      onChange={async (versionId) => {
-                        await setReferenceVersion({ fileId: file.id, versionId }).unwrap()
-                        message.success('审批引用版本已更新并留痕')
-                      }}
+                      onChange={(versionId) => changeReference(file, versionId)}
                     />
                     {referencedVersion.id !== activeVersion.id ? (
                       <Tag color="error">存在版本错配</Tag>
@@ -325,9 +411,23 @@ export function PackageEditorPage() {
               </div>
             </div>
             <div>
-              <strong>许可额度</strong>
+              <strong>许可额度池</strong>
               <div className="muted" style={{ marginTop: 5 }}>
-                已使用 {packageItem.quotaUsed} / {packageItem.quotaLimit}
+                {quotaPool ? (
+                  <Space wrap size={[8, 4]}>
+                    <Tag>规则上限 {quotaPool.limit}</Tag>
+                    <Tag color="green">已转用 {quotaPool.consumed}</Tag>
+                    <Tag color="gold">预占 {quotaPool.reserved}</Tag>
+                    <Tag color={quotaPool.available <= 10 ? 'error' : 'blue'}>
+                      可用 {quotaPool.available}
+                    </Tag>
+                  </Space>
+                ) : (
+                  '暂无规则额度池数据'
+                )}
+              </div>
+              <div className="muted" style={{ marginTop: 5 }}>
+                提交审批时从该池预占本次额度，退回或撤回释放，最后一步通过后按同一冻结单转用。
               </div>
             </div>
           </Space>
@@ -352,17 +452,48 @@ export function PackageEditorPage() {
             >
               执行许可校验
             </Button>
-            <Button
-              type="primary"
-              icon={<SaveOutlined />}
-              loading={saveState.isLoading}
-              onClick={savePackageInfo}
+            <Popconfirm
+              title="保存资料包"
+              description={
+                activeFreeze
+                  ? `保存会让有效冻结单 ${activeFreeze.code} 失效并释放预占额度 ${activeFreeze.reservedAmount}，审批需重新发起，确认保存？`
+                  : '保存后重新匹配许可规则。'
+              }
+              okText={activeFreeze ? '保存并作废冻结单' : '保存'}
+              okButtonProps={{ danger: Boolean(activeFreeze) }}
+              cancelText="取消"
+              onConfirm={savePackageInfo}
             >
-              保存
-            </Button>
+              <Button type="primary" icon={<SaveOutlined />} loading={saveState.isLoading}>
+                保存
+              </Button>
+            </Popconfirm>
           </>
         }
       />
+
+      {activeFreeze ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`审批冻结单 ${activeFreeze.code} 有效中，已预占 ${activeFreeze.reservedAmount} 个额度`}
+          description="审批人只按冻结单固定的声明、文件现行版本和逐页核对结果审批。在此保存资料包、登记文件、换版本或修改核对页，都会让冻结单失效（旧快照保留）并释放预占，需要重新提交。"
+        />
+      ) : null}
+      {!activeFreeze && latestFreeze?.status === 'invalidated' ? (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`冻结单 ${latestFreeze.code} 已失效，预占额度已释放`}
+          description={
+            latestFreeze.invalidatedReason
+              ? `失效原因：${freezeInvalidReasonLabels[latestFreeze.invalidatedReason]}。${latestFreeze.invalidatedDetail ?? ''}（${freezeStatusLabels.invalidated}前的固定快照仍保留可查。）`
+              : latestFreeze.invalidatedDetail
+          }
+        />
+      ) : null}
 
       {packageFindings.some((item) => item.level === 'high') ? (
         <Alert
@@ -469,9 +600,52 @@ export function PackageEditorPage() {
               <div>{packageItem.currentRound ? `第 ${packageItem.currentRound} 轮` : '未提交'}</div>
             </div>
             <div>
-              <span className="muted">许可额度</span>
+              <span className="muted">审批冻结单</span>
               <div>
-                {packageItem.quotaUsed} / {packageItem.quotaLimit}
+                {latestFreeze ? (
+                  <Space direction="vertical" size={0}>
+                    <span>
+                      {latestFreeze.code} ·{' '}
+                      <Tag
+                        color={
+                          latestFreeze.status === 'active'
+                            ? 'gold'
+                            : latestFreeze.status === 'consumed'
+                              ? 'green'
+                              : latestFreeze.status === 'invalidated'
+                                ? 'error'
+                                : 'default'
+                        }
+                      >
+                        {freezeStatusLabels[latestFreeze.status]}
+                      </Tag>
+                    </span>
+                    <span className="muted">
+                      预占/转用 {latestFreeze.reservedAmount}（
+                      {latestFreeze.status === 'active'
+                        ? '占用中'
+                        : latestFreeze.status === 'consumed'
+                          ? '已转用'
+                          : '已归还额度池'}
+                      ）
+                    </span>
+                  </Space>
+                ) : (
+                  <span className="muted">尚未生成</span>
+                )}
+              </div>
+            </div>
+            <div>
+              <span className="muted">规则额度池</span>
+              <div>
+                {quotaPool ? (
+                  <span>
+                    已转用 {quotaPool.consumed} · 预占 {quotaPool.reserved} · 可用{' '}
+                    {quotaPool.available} / {quotaPool.limit}
+                  </span>
+                ) : (
+                  <span className="muted">无匹配规则</span>
+                )}
               </div>
             </div>
             <div>

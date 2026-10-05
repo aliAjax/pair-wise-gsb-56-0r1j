@@ -1,4 +1,5 @@
 import type {
+  ApprovalFreeze,
   FileVersion,
   LicenseRule,
   MaterialFile,
@@ -6,6 +7,7 @@ import type {
   PageReview,
   WorkspaceState,
 } from '@/types/domain'
+import { captureFrozenFiles } from './freezes'
 import { createApprovalRoute, validatePackage } from './rules'
 
 function pages(
@@ -116,6 +118,27 @@ const sw1 = version('V2.0', 5, true, '7EA2-319F', '标准控制器软件包')
 const sw2 = version('V2.1', 6, true, '52CC-8D10', '修复通信模块并更新校验文件')
 const us1 = version('V3.2', 12, false, 'E11A-77B4', '光刻设备参数说明', { controlled: true })
 const my1 = version('V1.0', 4, false, '88AB-3411', '厂房布置示意')
+const sg5a = version('V1.4', 6, true, '6B31-7E08', '复材翼肋成型工艺', { controlled: true, desensitized: true })
+const sg5b = version('V2.0', 4, true, '92DC-1A55', '固化炉参数表')
+
+interface FreezeSeed {
+  id: string
+  code: string
+  packageId: string
+  round: number
+  ruleId: string
+  status: ApprovalFreeze['status']
+  reservedAmount: number
+  createdAt: string
+  createdBy: string
+  findings: ApprovalFreeze['findings']
+  consumedAt?: string
+  releasedAt?: string
+  releaseReason?: ApprovalFreeze['releaseReason']
+  invalidatedAt?: string
+  invalidatedReason?: ApprovalFreeze['invalidatedReason']
+  invalidatedDetail?: string
+}
 
 export function createInitialState(): WorkspaceState {
   const now = '2026-09-28T06:00:00.000Z'
@@ -132,12 +155,13 @@ export function createInitialState(): WorkspaceState {
       technologyTags: ['复合材料', '工艺参数'],
       personnelScopes: ['第三方承包商'],
       declarations: ['最终用户声明', '最终用途声明'],
-      status: 'reviewing',
+      status: 'freeze-invalid',
       matchedRuleId: 'rule-sg-composite',
-      approvalRoute: createApprovalRoute('enhanced'),
+      approvalRoute: createApprovalRoute('enhanced').map((step) => ({
+        ...step,
+        status: 'waiting',
+      })),
       currentRound: 1,
-      quotaUsed: 36,
-      quotaLimit: 80,
       createdAt: '2026-09-20T02:10:00.000Z',
       updatedAt: now,
       versions: [],
@@ -154,7 +178,7 @@ export function createInitialState(): WorkspaceState {
       technologyTags: ['工业控制', '加密算法'],
       personnelScopes: [],
       declarations: ['最终用户声明', '软件用途声明'],
-      status: 'approved',
+      status: 'licensed',
       matchedRuleId: 'rule-de-software',
       approvalRoute: createApprovalRoute('standard').map((step) => ({
         ...step,
@@ -163,8 +187,6 @@ export function createInitialState(): WorkspaceState {
         decidedAt: '2026-09-27T03:20:00.000Z',
       })),
       currentRound: 1,
-      quotaUsed: 42,
-      quotaLimit: 120,
       createdAt: '2026-09-18T04:30:00.000Z',
       updatedAt: '2026-09-27T03:20:00.000Z',
       versions: [],
@@ -194,8 +216,6 @@ export function createInitialState(): WorkspaceState {
           : { ...step },
       ),
       currentRound: 2,
-      quotaUsed: 27,
-      quotaLimit: 30,
       createdAt: '2026-09-16T01:15:00.000Z',
       updatedAt: '2026-09-26T08:10:00.000Z',
       versions: [],
@@ -216,10 +236,28 @@ export function createInitialState(): WorkspaceState {
       matchedRuleId: 'rule-my-general',
       approvalRoute: [],
       currentRound: 0,
-      quotaUsed: 8,
-      quotaLimit: 100,
       createdAt: '2026-09-28T00:20:00.000Z',
       updatedAt: now,
+      versions: [],
+    },
+    {
+      id: 'pkg-005',
+      code: 'EC-2026-005',
+      title: '复材翼肋成型与固化参数包',
+      category: 'technical',
+      applicant: '周明',
+      recipient: 'Lion Air Composites Services Pte. Ltd.',
+      destination: '新加坡',
+      endUse: '民用航空维修备件试制',
+      technologyTags: ['复合材料', '工艺参数'],
+      personnelScopes: [],
+      declarations: ['最终用户声明', '最终用途声明', '不扩散声明'],
+      status: 'reviewing',
+      matchedRuleId: 'rule-sg-composite',
+      approvalRoute: createApprovalRoute('enhanced'),
+      currentRound: 1,
+      createdAt: '2026-09-27T09:40:00.000Z',
+      updatedAt: '2026-09-28T03:05:00.000Z',
       versions: [],
     },
   ]
@@ -269,6 +307,24 @@ export function createInitialState(): WorkspaceState {
       activeVersionId: my1.id,
       referencedVersionId: my1.id,
       versions: [my1],
+    },
+    {
+      id: 'file-005-a',
+      packageId: 'pkg-005',
+      name: '翼肋成型工艺规程.pdf',
+      kind: 'technical',
+      activeVersionId: sg5a.id,
+      referencedVersionId: sg5a.id,
+      versions: [sg5a],
+    },
+    {
+      id: 'file-005-b',
+      packageId: 'pkg-005',
+      name: '固化炉参数表.xlsx',
+      kind: 'technical',
+      activeVersionId: sg5b.id,
+      referencedVersionId: sg5b.id,
+      versions: [sg5b],
     },
   ]
 
@@ -322,8 +378,92 @@ export function createInitialState(): WorkspaceState {
     }
   })
 
+  const freezeSeeds: FreezeSeed[] = [
+    {
+      id: 'freeze-pkg-001-r1',
+      code: 'FRZ-2026-001-R1',
+      packageId: 'pkg-001',
+      round: 1,
+      ruleId: 'rule-sg-composite',
+      status: 'invalidated',
+      reservedAmount: 8,
+      createdAt: '2026-09-27T06:10:00.000Z',
+      createdBy: '周明',
+      findings: [],
+      invalidatedAt: '2026-09-27T09:25:00.000Z',
+      invalidatedReason: 'file-version-changed',
+      invalidatedDetail: '文件 铺层工艺规程.pdf 上传了新版本 V1.1，冻结时固定的现行版本 V1.0 不再是现行版本。',
+    },
+    {
+      id: 'freeze-pkg-002-r1',
+      code: 'FRZ-2026-002-R1',
+      packageId: 'pkg-002',
+      round: 1,
+      ruleId: 'rule-de-software',
+      status: 'consumed',
+      reservedAmount: 42,
+      createdAt: '2026-09-26T08:00:00.000Z',
+      createdBy: '赵敏',
+      findings: [],
+      consumedAt: '2026-09-27T03:20:00.000Z',
+    },
+    {
+      id: 'freeze-pkg-003-r2',
+      code: 'FRZ-2026-003-R2',
+      packageId: 'pkg-003',
+      round: 2,
+      ruleId: 'rule-us-lithography',
+      status: 'released',
+      reservedAmount: 6,
+      createdAt: '2026-09-26T07:20:00.000Z',
+      createdBy: '林越',
+      findings: [],
+      releasedAt: '2026-09-26T08:10:00.000Z',
+      releaseReason: 'approval-returned',
+    },
+    {
+      id: 'freeze-pkg-005-r1',
+      code: 'FRZ-2026-005-R1',
+      packageId: 'pkg-005',
+      round: 1,
+      ruleId: 'rule-sg-composite',
+      status: 'active',
+      reservedAmount: 64,
+      createdAt: '2026-09-28T03:05:00.000Z',
+      createdBy: '周明',
+      findings: [],
+    },
+  ]
+
+  const freezes: ApprovalFreeze[] = freezeSeeds.map((seed) => {
+    const packageItem = packages.find((item) => item.id === seed.packageId)!
+    const rule = rules.find((item) => item.id === seed.ruleId)!
+    return {
+      id: seed.id,
+      code: seed.code,
+      packageId: seed.packageId,
+      packageCode: packageItem.code,
+      round: seed.round,
+      ruleId: seed.ruleId,
+      ruleName: rule.name,
+      status: seed.status,
+      reservedAmount: seed.reservedAmount,
+      createdAt: seed.createdAt,
+      createdBy: seed.createdBy,
+      declarations: [...packageItem.declarations],
+      files: captureFrozenFiles(seed.packageId, files),
+      findings: seed.findings,
+      consumedAt: seed.consumedAt,
+      releasedAt: seed.releasedAt,
+      releaseReason: seed.releaseReason,
+      invalidatedAt: seed.invalidatedAt,
+      invalidatedReason: seed.invalidatedReason,
+      invalidatedDetail: seed.invalidatedDetail,
+    }
+  })
+
   const findings = packages.flatMap((packageItem) =>
-    validatePackage(packageItem, files, rules),
+    validatePackage(packageItem, files, rules, freezes),
   )
   return {
     packages,
@@ -348,6 +488,7 @@ export function createInitialState(): WorkspaceState {
         round: 2,
       },
     ],
+    freezes,
     audit: [
       {
         id: 'audit-1',
@@ -360,20 +501,39 @@ export function createInitialState(): WorkspaceState {
       },
       {
         id: 'audit-2',
+        packageId: 'pkg-005',
+        action: '提交审批冻结',
+        target: 'FRZ-2026-005-R1',
+        operator: '周明',
+        detail:
+          '固定声明与 2 个文件现行版本（含 10 页逐页核对结果），从新加坡复合材料工艺资料许可规则额度池预占 64。',
+        createdAt: '2026-09-28T03:05:00.000Z',
+      },
+      {
+        id: 'audit-3',
+        packageId: 'pkg-001',
+        action: '冻结单失效',
+        target: 'FRZ-2026-001-R1',
+        operator: '系统',
+        detail: '文件 铺层工艺规程.pdf 上传新版本 V1.1，冻结单失效并释放预占额度 8。',
+        createdAt: '2026-09-27T09:25:00.000Z',
+      },
+      {
+        id: 'audit-4',
         packageId: 'pkg-003',
         action: '审批退回',
         target: '精密光刻运动控制技术说明',
         operator: '技术安全负责人',
-        detail: '需要补充人员接触清单并重新核对最终用途。',
+        detail: '需要补充人员接触清单并重新核对最终用途，冻结单 FRZ-2026-003-R2 释放预占额度 6。',
         createdAt: '2026-09-26T08:10:00.000Z',
       },
       {
-        id: 'audit-3',
+        id: 'audit-5',
         packageId: 'pkg-002',
-        action: '批准资料包',
-        target: '工业控制器基础软件包',
+        action: '转用许可额度',
+        target: 'FRZ-2026-002-R1',
         operator: '合规专员',
-        detail: '全部审批步骤完成，等待许可额度扣减。',
+        detail: '全部审批步骤通过，预占额度 42 按同一冻结单转用，未重复占用额度池。',
         createdAt: '2026-09-27T03:20:00.000Z',
       },
     ],
@@ -394,4 +554,5 @@ export const packageStatusLabels: Record<MaterialPackage['status'], string> = {
   approved: '已批准',
   licensed: '已许可',
   locked: '已归档',
+  'freeze-invalid': '冻结失效',
 }

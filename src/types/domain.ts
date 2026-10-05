@@ -7,9 +7,16 @@ export type PackageStatus =
   | 'approved'
   | 'licensed'
   | 'locked'
+  | 'freeze-invalid'
 export type ApprovalLevel = 'standard' | 'enhanced' | 'senior'
 export type FindingLevel = 'high' | 'medium' | 'low'
-export type FindingType = 'missing-declaration' | 'escalation' | 'version-mismatch' | 'unclassified-page' | 'quota'
+export type FindingType =
+  | 'missing-declaration'
+  | 'escalation'
+  | 'version-mismatch'
+  | 'unclassified-page'
+  | 'quota'
+  | 'freeze'
 
 export interface PageReview {
   id: string
@@ -71,6 +78,63 @@ export interface PackageVersion {
   }
 }
 
+export type FreezeStatus = 'active' | 'consumed' | 'released' | 'invalidated'
+
+export type FreezeInvalidReason =
+  | 'package-saved'
+  | 'file-added'
+  | 'file-version-changed'
+  | 'reference-changed'
+  | 'page-review-changed'
+  | 'snapshot-drift'
+
+export type FreezeReleaseReason = 'approval-returned' | 'approval-withdrawn'
+
+/** 冻结时逐页核对结果的固定副本 */
+export type FrozenPageReview = PageReview
+
+/** 冻结单固定的单个文件现行版本及其逐页核对结果 */
+export interface FrozenFileSnapshot {
+  fileId: string
+  fileName: string
+  kind: MaterialCategory
+  activeVersionId: string
+  referencedVersionId: string
+  versionLabel: string
+  versionHash: string
+  pages: FrozenPageReview[]
+}
+
+/**
+ * 审批冻结单：提交时固定声明、文件现行版本和逐页核对结果，
+ * 并从许可规则额度池预占额度，审批全程只允许使用同一冻结单。
+ */
+export interface ApprovalFreeze {
+  id: string
+  code: string
+  packageId: string
+  packageCode: string
+  round: number
+  ruleId: string
+  ruleName: string
+  status: FreezeStatus
+  reservedAmount: number
+  createdAt: string
+  createdBy: string
+  /** 固定的申报声明 */
+  declarations: string[]
+  /** 固定的文件现行版本与逐页核对结果 */
+  files: FrozenFileSnapshot[]
+  /** 提交时固定的核对结论 */
+  findings: ValidationFinding[]
+  consumedAt?: string
+  releasedAt?: string
+  releaseReason?: FreezeReleaseReason
+  invalidatedAt?: string
+  invalidatedReason?: FreezeInvalidReason
+  invalidatedDetail?: string
+}
+
 export interface ReviewComment {
   id: string
   packageId: string
@@ -96,8 +160,6 @@ export interface MaterialPackage {
   matchedRuleId?: string
   approvalRoute: ApprovalStep[]
   currentRound: number
-  quotaUsed: number
-  quotaLimit: number
   createdAt: string
   updatedAt: string
   versions: PackageVersion[]
@@ -142,6 +204,7 @@ export interface WorkspaceState {
   rules: LicenseRule[]
   findings: ValidationFinding[]
   comments: ReviewComment[]
+  freezes: ApprovalFreeze[]
   audit: AuditEntry[]
 }
 

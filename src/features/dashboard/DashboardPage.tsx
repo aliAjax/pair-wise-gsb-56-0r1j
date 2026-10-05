@@ -6,6 +6,7 @@ import { StatusTag } from '@/components/StatusTag'
 import { useGetWorkspaceQuery } from '@/app/api'
 import type { MaterialPackage, ValidationFinding } from '@/types/domain'
 import { categoryLabels } from '@/services/mockData'
+import { getRuleQuotaPool } from '@/services/freezes'
 
 export function DashboardPage() {
   const navigate = useNavigate()
@@ -15,8 +16,20 @@ export function DashboardPage() {
 
   const highFindings = data.findings.filter((item) => item.level === 'high')
   const activePackages = data.packages.filter((item) =>
-    ['validating', 'reviewing', 'returned'].includes(item.status),
+    ['validating', 'reviewing', 'returned', 'freeze-invalid'].includes(item.status),
   )
+  const reservedQuota = data.freezes
+    .filter((freeze) => freeze.status === 'active')
+    .reduce((sum, freeze) => sum + freeze.reservedAmount, 0)
+  const consumedQuota = data.freezes
+    .filter((freeze) => freeze.status === 'consumed')
+    .reduce((sum, freeze) => sum + freeze.reservedAmount, 0)
+  const totalQuotaLimit = data.rules.reduce((sum, rule) => sum + rule.quotaLimit, 0)
+  const activeFreezeCount = data.freezes.filter((freeze) => freeze.status === 'active').length
+  const invalidFreezeCount = data.freezes.filter((freeze) => freeze.status === 'invalidated').length
+  const tightPools = data.rules
+    .map((rule) => getRuleQuotaPool(rule, data.freezes))
+    .filter((pool) => pool.available <= 10)
   const controlledPages = data.files.reduce(
     (total, file) =>
       total +
@@ -112,12 +125,31 @@ export function DashboardPage() {
         <div className="metric danger">
           <span>高风险核对项</span>
           <strong>{highFindings.length}</strong>
-          <small>必须解决后才能批准或扣减额度</small>
+          <small>必须解决后才能批准或转用额度</small>
         </div>
         <div className="metric info">
           <span>处理中资料包</span>
           <strong>{activePackages.length}</strong>
-          <small>审批中、已退回或校验中</small>
+          <small>审批中、已退回或冻结失效</small>
+        </div>
+        <div className="metric warning">
+          <span>冻结预占额度</span>
+          <strong>{reservedQuota}</strong>
+          <small>
+            {activeFreezeCount} 张有效冻结单占用中{invalidFreezeCount ? ` · ${invalidFreezeCount} 张已失效` : ''}
+          </small>
+        </div>
+        <div className="metric">
+          <span>额度池使用</span>
+          <strong>
+            {consumedQuota + reservedQuota} / {totalQuotaLimit}
+          </strong>
+          <small>已转用 {consumedQuota}，退回/撤回会归还预占</small>
+          <Progress
+            percent={totalQuotaLimit ? Math.round(((consumedQuota + reservedQuota) / totalQuotaLimit) * 100) : 0}
+            showInfo={false}
+            size="small"
+          />
         </div>
         <div className="metric warning">
           <span>受控技术页</span>
@@ -142,6 +174,17 @@ export function DashboardPage() {
           showIcon
           type="error"
           message={`当前有 ${highFindings.length} 项高风险核对结论，系统不会在资料不完整时静默批准。`}
+          style={{ marginBottom: 16 }}
+        />
+      ) : null}
+      {tightPools.length ? (
+        <Alert
+          showIcon
+          type="warning"
+          message={`${tightPools.length} 个许可规则额度池可用额度紧张：${tightPools
+            .map((pool) => `${pool.ruleName}（剩 ${pool.available}）`)
+            .join('；')}`}
+          description="多个资料包前后脚提交会按顺序预占同一额度池，退回、撤回或冻结单失效后额度立即归还。"
           style={{ marginBottom: 16 }}
         />
       ) : null}
@@ -183,7 +226,7 @@ export function DashboardPage() {
             <div>
               <strong>额度控制</strong>
               <p className="muted">
-                审批完成后才允许扣减许可额度，超额度或额度不足时拒绝执行。
+                提交审批即从许可规则额度池预占额度并生成冻结单；退回、撤回或资料变更释放预占，最后一步通过后只按同一冻结单转用，重复点击不会多占。
               </p>
             </div>
           </Space>

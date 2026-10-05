@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Descriptions, Select, Space, Table, Tag, message } from 'antd'
+import { Alert, Descriptions, Modal, Select, Space, Table, Tag, message } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useSearchParams } from 'react-router-dom'
 import { PageHeader } from '@/components/PageHeader'
@@ -9,6 +9,52 @@ import {
 } from '@/app/api'
 import type { MaterialFile, VersionDiff } from '@/types/domain'
 import { diffPackageVersions } from '@/services/rules'
+import { getActiveFreeze } from '@/services/freezes'
+import type { ApprovalFreeze } from '@/types/domain'
+
+function unpackError(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'data' in error) {
+    const detail = (error.data as { error?: string }).error
+    if (detail) return detail
+  }
+  return '操作失败'
+}
+
+function ReferenceSelect({
+  file,
+  freeze,
+  onSwitch,
+}: {
+  file: MaterialFile
+  freeze?: ApprovalFreeze
+  onSwitch: (versionId: string) => Promise<void>
+}) {
+  return (
+    <Select
+      value={file.referencedVersionId}
+      style={{ width: 165 }}
+      options={file.versions.map((version) => ({
+        value: version.id,
+        label: `${version.label} · ${version.hash}`,
+      }))}
+      onChange={(nextVersionId) => {
+        if (nextVersionId === file.referencedVersionId) return
+        if (freeze) {
+          Modal.confirm({
+            title: '切换引用会作废冻结单',
+            content: `冻结单 ${freeze.code} 将因「修改审批引用版本」失效，预占的 ${freeze.reservedAmount} 个额度立即释放，确认切换到该版本？`,
+            okText: '切换并作废冻结单',
+            okButtonProps: { danger: true },
+            cancelText: '取消',
+            onOk: () => onSwitch(nextVersionId),
+          })
+        } else {
+          void onSwitch(nextVersionId)
+        }
+      }}
+    />
+  )
+}
 
 export function VersionDiffPage() {
   const [searchParams] = useSearchParams()
@@ -26,6 +72,7 @@ export function VersionDiffPage() {
     [data, selectedId],
   )
   const files = data?.files.filter((file) => file.packageId === selectedId) ?? []
+  const activeFreeze = data && selectedId ? getActiveFreeze(data.freezes, selectedId) : undefined
 
   useEffect(() => {
     if (selected && !selected.versions.some((version) => version.id === versionId)) {
@@ -49,16 +96,20 @@ export function VersionDiffPage() {
       title: '审批引用版本',
       width: 190,
       render: (_, file) => (
-        <Select
-          value={file.referencedVersionId}
-          style={{ width: 165 }}
-          options={file.versions.map((version) => ({
-            value: version.id,
-            label: `${version.label} · ${version.hash}`,
-          }))}
-          onChange={async (nextVersionId) => {
-            await setReferenceVersion({ fileId: file.id, versionId: nextVersionId }).unwrap()
-            message.success('版本引用已切换并写入审计')
+        <ReferenceSelect
+          file={file}
+          freeze={activeFreeze}
+          onSwitch={async (nextVersionId) => {
+            try {
+              await setReferenceVersion({ fileId: file.id, versionId: nextVersionId }).unwrap()
+              message.success(
+                activeFreeze
+                  ? '版本引用已切换，有效冻结单因此失效并释放预占，请重新提交审批'
+                  : '版本引用已切换并写入审计',
+              )
+            } catch (error) {
+              message.error(unpackError(error))
+            }
           }}
         />
       ),
@@ -178,6 +229,14 @@ export function VersionDiffPage() {
           </Space>
         </div>
         <Table rowKey="id" columns={fileColumns} dataSource={files} pagination={false} />
+        {activeFreeze ? (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginTop: 14 }}
+            message={`冻结单 ${activeFreeze.code} 有效中（预占 ${activeFreeze.reservedAmount}），切换任何文件的审批引用版本都会让冻结单失效并释放预占。`}
+          />
+        ) : null}
         {files.some((file) => file.activeVersionId !== file.referencedVersionId) ? (
           <Alert
             type="error"

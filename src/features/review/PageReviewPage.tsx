@@ -3,6 +3,8 @@ import {
   Alert,
   Button,
   Input,
+  Modal,
+  Popconfirm,
   Select,
   Space,
   Switch,
@@ -21,6 +23,15 @@ import {
 } from '@/app/api'
 import type { MaterialCategory, PageReview } from '@/types/domain'
 import { categoryLabels } from '@/services/mockData'
+import { freezeInvalidReasonLabels, getActiveFreeze } from '@/services/freezes'
+
+function unpackError(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'data' in error) {
+    const detail = (error.data as { error?: string }).error
+    if (detail) return detail
+  }
+  return '操作失败'
+}
 
 export function PageReviewPage() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -36,6 +47,16 @@ export function PageReviewPage() {
     () => data?.files.filter((file) => file.packageId === selectedPackageId) ?? [],
     [data, selectedPackageId],
   )
+  const activeFreeze = useMemo(
+    () => (data && selectedPackageId ? getActiveFreeze(data.freezes, selectedPackageId) : undefined),
+    [data, selectedPackageId],
+  )
+  const latestInvalidFreeze = useMemo(() => {
+    if (!data || !selectedPackageId) return undefined
+    return data.freezes.find(
+      (freeze) => freeze.packageId === selectedPackageId && freeze.status === 'invalidated',
+    )
+  }, [data, selectedPackageId])
   const selectedFile = packageFiles.find((file) => file.id === selectedFileId)
   const activeVersion = selectedFile?.versions.find(
     (version) => version.id === selectedFile.activeVersionId,
@@ -84,21 +105,29 @@ export function PageReviewPage() {
 
   async function saveRows(ids: React.Key[]) {
     if (!selectedFile || !activeVersion) return
-    for (const id of ids) {
-      const page = pages.find((item) => item.id === id)
-      if (!page) continue
-      await savePageReview({
-        fileId: selectedFile.id,
-        versionId: activeVersion.id,
-        page: {
-          ...page,
-          reviewer: '当前用户',
-          reviewedAt: new Date().toISOString(),
-        },
-      }).unwrap()
+    try {
+      for (const id of ids) {
+        const page = pages.find((item) => item.id === id)
+        if (!page) continue
+        await savePageReview({
+          fileId: selectedFile.id,
+          versionId: activeVersion.id,
+          page: {
+            ...page,
+            reviewer: '当前用户',
+            reviewedAt: new Date().toISOString(),
+          },
+        }).unwrap()
+      }
+      message.success(
+        activeFreeze
+          ? `已保存 ${ids.length} 页核对结果，有效冻结单已失效并释放预占，需要重新提交审批`
+          : `已保存 ${ids.length} 页的核对结果`,
+      )
+      setSelectedRows([])
+    } catch (error) {
+      message.error(unpackError(error))
     }
-    message.success(`已保存 ${ids.length} 页的核对结果`)
-    setSelectedRows([])
   }
 
   const columns: TableColumnsType<PageReview> = [
@@ -191,11 +220,25 @@ export function PageReviewPage() {
       title: '操作',
       width: 100,
       fixed: 'right',
-      render: (_, record) => (
-        <Button type="link" loading={saveState.isLoading} onClick={() => saveRows([record.id])}>
-          保存本页
-        </Button>
-      ),
+      render: (_, record) =>
+        activeFreeze ? (
+          <Popconfirm
+            title="保存本页会作废冻结单"
+            description={`冻结单 ${activeFreeze.code} 将失效并释放预占 ${activeFreeze.reservedAmount}，确认保存？`}
+            okText="保存并作废"
+            okButtonProps={{ danger: true }}
+            cancelText="取消"
+            onConfirm={() => saveRows([record.id])}
+          >
+            <Button type="link" loading={saveState.isLoading}>
+              保存本页
+            </Button>
+          </Popconfirm>
+        ) : (
+          <Button type="link" loading={saveState.isLoading} onClick={() => saveRows([record.id])}>
+            保存本页
+          </Button>
+        ),
     },
   ]
 
@@ -220,7 +263,20 @@ export function PageReviewPage() {
               icon={<CheckOutlined />}
               disabled={!selectedRows.length}
               loading={saveState.isLoading}
-              onClick={() => saveRows(selectedRows)}
+              onClick={() => {
+                if (activeFreeze) {
+                  Modal.confirm({
+                    title: '批量保存会作废冻结单',
+                    content: `冻结单 ${activeFreeze.code} 将因「修改逐页核对结果」失效，预占的 ${activeFreeze.reservedAmount} 个额度立即释放，确认保存选中的 ${selectedRows.length} 页？`,
+                    okText: '保存并作废冻结单',
+                    okButtonProps: { danger: true },
+                    cancelText: '取消',
+                    onOk: () => saveRows(selectedRows),
+                  })
+                } else {
+                  void saveRows(selectedRows)
+                }
+              }}
             >
               批量确认选中页
             </Button>
@@ -263,6 +319,29 @@ export function PageReviewPage() {
           showIcon
           message="审批引用版本与文件现行版本不一致，当前资料包将被阻断。"
           style={{ marginBottom: 14 }}
+        />
+      ) : null}
+
+      {activeFreeze ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 14 }}
+          message={`审批冻结单 ${activeFreeze.code} 有效中，已预占 ${activeFreeze.reservedAmount} 个额度`}
+          description="审批人按冻结时固定的逐页核对结果审批。保存任何一页的核对结果都会让冻结单失效（旧快照和原因保留）并释放预占额度，审批需重新发起。"
+        />
+      ) : null}
+      {!activeFreeze && latestInvalidFreeze ? (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 14 }}
+          message={`冻结单 ${latestInvalidFreeze.code} 已失效（${
+            latestInvalidFreeze.invalidatedReason
+              ? freezeInvalidReasonLabels[latestInvalidFreeze.invalidatedReason]
+              : '未知原因'
+          }），预占额度已释放`}
+          description={latestInvalidFreeze.invalidatedDetail}
         />
       ) : null}
 

@@ -14,7 +14,6 @@ import {
 import { useCreatePackageMutation, useGetWorkspaceQuery } from '@/app/api'
 import type { MaterialCategory, MaterialPackage } from '@/types/domain'
 import { categoryLabels } from '@/services/mockData'
-import { findApplicableRule } from '@/services/rules'
 
 interface CreatePackageValues {
   title: string
@@ -109,7 +108,6 @@ export function PackageListPage() {
 
   async function submitCreate() {
     const values = await form.validateFields()
-    const now = new Date().toISOString()
     const draft: Omit<
       MaterialPackage,
       'id' | 'approvalRoute' | 'versions' | 'currentRound' | 'createdAt' | 'updatedAt'
@@ -117,24 +115,6 @@ export function PackageListPage() {
       ...values,
       code: `EC-2026-${String(data!.packages.length + 1).padStart(3, '0')}`,
       status: 'draft',
-      quotaUsed: 0,
-      quotaLimit:
-        findApplicableRule(
-          {
-            ...values,
-            id: 'temp',
-            code: 'temp',
-            status: 'draft',
-            approvalRoute: [],
-            currentRound: 0,
-            quotaUsed: 0,
-            quotaLimit: 0,
-            createdAt: now,
-            updatedAt: now,
-            versions: [],
-          },
-          data!.rules,
-        )?.quotaLimit ?? 20,
     }
     const result = await createPackage({ package: draft }).unwrap()
     const created = result.packages.find((item) => item.code === draft.code)
@@ -182,6 +162,7 @@ export function PackageListPage() {
             { value: 'validating', label: '校验中' },
             { value: 'reviewing', label: '审批中' },
             { value: 'returned', label: '已退回' },
+            { value: 'freeze-invalid', label: '冻结失效' },
             { value: 'approved', label: '已批准' },
             { value: 'licensed', label: '已许可' },
             { value: 'locked', label: '已归档' },

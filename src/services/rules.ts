@@ -1,12 +1,19 @@
 import type {
   ApprovalLevel,
   ApprovalStep,
+  ApprovalFreeze,
   LicenseRule,
   MaterialFile,
   MaterialPackage,
   ValidationFinding,
   VersionDiff,
 } from '@/types/domain'
+import {
+  findSnapshotDrift,
+  freezeInvalidReasonLabels,
+  getActiveFreeze,
+  getRuleQuotaPool,
+} from './freezes'
 
 const levelRank: Record<ApprovalLevel, number> = {
   standard: 1,
@@ -95,6 +102,7 @@ export function validatePackage(
   packageItem: MaterialPackage,
   files: MaterialFile[],
   rules: LicenseRule[],
+  freezes: ApprovalFreeze[] = [],
 ): ValidationFinding[] {
   const findings: ValidationFinding[] = []
   const packageFiles = files.filter((file) => file.packageId === packageItem.id)
@@ -145,10 +153,46 @@ export function validatePackage(
     )
   }
 
-  if (packageItem.quotaUsed >= packageItem.quotaLimit) {
-    add('quota', 'high', '许可额度已用尽。', '申请额度调整或拆分至其他有效许可。')
-  } else if (packageItem.quotaLimit - packageItem.quotaUsed <= 10) {
-    add('quota', 'medium', '剩余许可额度不足 10%。', '审批通过前确认额度来源和扣减顺序。')
+  const activeFreeze = getActiveFreeze(freezes, packageItem.id)
+  if (activeFreeze) {
+    const drift = findSnapshotDrift(activeFreeze, packageItem, files)
+    if (drift) {
+      add(
+        'freeze',
+        'high',
+        `审批冻结单 ${activeFreeze.code} 已与当前资料漂移：${drift.detail}`,
+        '当前审批被阻断，需撤回后重新提交生成新的冻结单。',
+      )
+    }
+  } else if (packageItem.status === 'freeze-invalid') {
+    const lastFreeze = [...freezes]
+      .reverse()
+      .find((freeze) => freeze.packageId === packageItem.id && freeze.status === 'invalidated')
+    add(
+      'freeze',
+      'high',
+      lastFreeze?.invalidatedReason
+        ? `上一张审批冻结单已因「${freezeInvalidReasonLabels[lastFreeze.invalidatedReason]}」失效，预占额度已释放。`
+        : '上一张审批冻结单已失效，预占额度已释放。',
+      '核对资料后重新提交，系统会生成新的冻结单并重新预占额度。',
+    )
+  }
+
+  const pool = getRuleQuotaPool(rule, freezes)
+  if (pool.available <= 0) {
+    add(
+      'quota',
+      'high',
+      `许可规则「${rule.name}」额度池已用尽（上限 ${pool.limit}，已转用 ${pool.consumed}，预占 ${pool.reserved}）。`,
+      '等待退回/撤回释放预占，或申请额度调整、拆分至其他有效许可。',
+    )
+  } else if (pool.available <= 10) {
+    add(
+      'quota',
+      'medium',
+      `许可规则「${rule.name}」可用额度仅剩 ${pool.available}（已转用 ${pool.consumed}、预占 ${pool.reserved}）。`,
+      '提交前确认额度来源和预占顺序，多个资料包同时提交会按顺序占用同一额度池。',
+    )
   }
 
   packageFiles.forEach((file) => {
